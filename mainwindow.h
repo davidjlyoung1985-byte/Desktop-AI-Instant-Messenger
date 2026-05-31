@@ -83,7 +83,7 @@ private:
     QWidget *createNetworkBar();
 
     // ===== 聊天 ====
-    QWidget *createChatDetailPanel(const QString &name, const QString &avatarColor);
+    QWidget *createChatDetailPanel(const QString &name, const QString &contactId, const QString &avatarColor);
     QString makeBubble(const QString &text, bool isMe,
                        const QString &avatarChar, const QString &avatarColor);
     void sendChatMessage(const QString &peerName, const QString &text);
@@ -134,7 +134,9 @@ private:
     QTextEdit   *m_chatDisplay = nullptr;
     QPushButton *m_chatSendBtn = nullptr;
     QCheckBox   *m_webSearchCheck = nullptr;
+    QComboBox   *m_modelCombo = nullptr;   // 模型切换下拉框
     QString      m_currentChatPeer;
+    QString      m_currentPeerId;
     QString      m_currentPeerColor;
 
     // -------- 联系人列表 --------

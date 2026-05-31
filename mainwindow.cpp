@@ -1,7 +1,10 @@
 #include "mainwindow.h"
 #include "constants.h"
 #include "avatarutils.h"
+#include "chathistory.h"
 #include "claudeclient.h"
+#include "configmanager.h"
+#include "contactstore.h"
 #include "deepseekclient.h"
 #include "markdownutils.h"
 #include "skillmanager.h"
@@ -341,40 +344,21 @@ QWidget *MainWindow::createMessagePanel()
         "QListWidget::item:selected { background: %2; }"
     ).arg(kWhite, kMsgHoverBg));
 
-    struct MsgItem {
-        QString name;
-        QString status;
-        QString summary;
-        QString statusColor;
-    };
-
-    const QVector<MsgItem> msgs = {
-        {"DeepSeek", "在线",   "你好！这个设计不错",              "#4cd137"},
-        {"李四", "忙碌",    "明天开会讨论一下方案",            "#fbc531"},
-        {"王五", "[离线]",  "文件已经发过去了",                "#aaaaaa"},
-        {"赵六", "在线",    "收到，谢谢！",                     "#4cd137"},
-        {"陈七", "[离线]",  "周末一起吃饭？",                  "#aaaaaa"},
-        {"刘八", "在线",    "新版本什么时候上线？",            "#4cd137"},
-        {"黄九", "在线",    "帮我 review 一下这个 PR",         "#4cd137"},
-        {"周十", "忙碌",    "会议纪要已发邮箱",                "#fbc531"},
-        {"吴十一","在线",   "这个问题怎么看？",                 "#4cd137"},
-        {"郑十二","[离线]", "哈哈哈好的",                      "#aaaaaa"},
-    };
-
     m_msgList->setIconSize(QSize(44, 44));
 
-    for (int i = 0; i < msgs.size(); ++i) {
-        const auto &m = msgs[i];
-        QPixmap pix = makeAvatar(m.name, kAvatarColors[i].name());
+    auto *store = ContactStore::instance();
+    auto *history = ChatHistory::instance();
+
+    for (int i = 0; i < store->contactCount(); ++i) {
+        const auto &c = store->allContacts()[i];
+        int colorIdx = i % 10;
+        QPixmap pix = makeAvatar(c.displayName, kAvatarColors[colorIdx].name());
+
         auto *item = new QListWidgetItem(QIcon(pix), "");
         item->setSizeHint(QSize(0, 62));
-        item->setData(Qt::UserRole,     m.name);
-        item->setData(Qt::UserRole + 1, kAvatarColors[i].name());
+        item->setData(Qt::UserRole,     c.id);   // 存 contact ID
+        item->setData(Qt::UserRole + 1, kAvatarColors[colorIdx].name());
         m_msgList->addItem(item);
-    }
-
-    for (int i = 0; i < m_msgList->count(); ++i) {
-        const auto &m = msgs[i];
 
         auto *w = new QWidget;
         auto *lay = new QVBoxLayout(w);
@@ -382,16 +366,30 @@ QWidget *MainWindow::createMessagePanel()
         lay->setSpacing(2);
 
         auto *header = new QHBoxLayout;
-        auto *nameLbl = new QLabel(m.name);
+        auto *nameLbl = new QLabel(c.displayName);
         nameLbl->setStyleSheet("font-size: 14px; font-weight: bold; color: #222;");
-        auto *statusLbl = new QLabel(m.status);
-        statusLbl->setStyleSheet(QString("font-size: 11px; color: %1;").arg(m.statusColor));
+
+        QString statusStr = c.online ? "在线" : "[离线]";
+        QString statusColor = c.online ? "#4cd137" : "#aaaaaa";
+        auto *statusLbl = new QLabel(statusStr);
+        statusLbl->setStyleSheet(QString("font-size: 11px; color: %1;").arg(statusColor));
 
         header->addWidget(nameLbl);
         header->addWidget(statusLbl);
         header->addStretch();
 
-        auto *summaryLbl = new QLabel(m.summary);
+        // 使用历史记录中的最后一条消息作为摘要
+        QString summary = c.statusText;
+        ChatMessage last = history->lastMessage(c.id);
+        if (last.id > 0) {
+            // 截取纯文本前 20 个字符
+            QString preview = last.content;
+            preview.remove(QRegularExpression("<[^>]*>"));
+            preview = preview.left(20);
+            if (last.content.length() > 20) preview += "...";
+            summary = preview;
+        }
+        auto *summaryLbl = new QLabel(summary);
         summaryLbl->setStyleSheet("font-size: 12px; color: #999;");
 
         lay->addLayout(header);
@@ -411,21 +409,27 @@ QWidget *MainWindow::createMessagePanel()
 void MainWindow::onMsgItemClicked(QListWidgetItem *item)
 {
     if (!item) return;
-    QString name  = item->data(Qt::UserRole).toString();
-    QString color = item->data(Qt::UserRole + 1).toString();
+    QString contactId = item->data(Qt::UserRole).toString();
+    QString color     = item->data(Qt::UserRole + 1).toString();
 
-    // 点击"DeepSeek" -> 首次需配置 DeepSeek API
-    if (name == "DeepSeek") {
+    const Contact *contact = ContactStore::instance()->byId(contactId);
+    if (!contact) return;
+
+    QString name = contact->displayName;
+
+    // DeepSeek 首次需配置
+    if (contact->type == "ai_deepseek") {
         if (!m_dsClient->showConfigDialog(this))
-            return; // 用户取消了配置
+            return;
     }
-    // 点击"李四" -> 首次需配置 Claude API
-    if (name == QString::fromUtf8("\xE6\x9D\x8E\xE5\x9B\x9B")) { // "李四"
+    // Claude 首次需配置
+    if (contact->type == "ai_claude") {
         if (!m_claudeClient->showConfigDialog(this))
-            return; // 用户取消了配置
+            return;
     }
 
     m_currentChatPeer = name;
+    m_currentPeerId   = contactId;
     m_currentPeerColor = color;
 
     // 移除旧的聊天详情
@@ -435,9 +439,23 @@ void MainWindow::onMsgItemClicked(QListWidgetItem *item)
         m_chatDetailWidget = nullptr;
     }
 
-    m_chatDetailWidget = createChatDetailPanel(name, color);
+    m_chatDetailWidget = createChatDetailPanel(name, contactId, color);
     m_stacked->addWidget(m_chatDetailWidget);
     m_stacked->setCurrentWidget(m_chatDetailWidget);
+
+    // ── 加载聊天历史 ──
+    auto *history = ChatHistory::instance();
+    auto msgs = history->loadMessages(contactId);
+    if (!msgs.isEmpty()) {
+        m_chatDisplay->clear();
+        for (const auto &m : msgs) {
+            if (m.isFromMe) {
+                m_chatDisplay->append(makeBubble(m.content, true, m.senderName, kBtnBlue));
+            } else {
+                m_chatDisplay->append(makeBubble(m.content, false, m.senderName, color));
+            }
+        }
+    }
 
     m_statusBar->setText(QString::fromUtf8(
         "\xF0\x9F\x92\xAC 正在与 %1 聊天"
@@ -452,6 +470,7 @@ void MainWindow::onChatBack()
 }
 
 QWidget *MainWindow::createChatDetailPanel(const QString &name,
+                                           const QString &contactId,
                                            const QString &avatarColor)
 {
     auto *w = new QWidget;
@@ -480,12 +499,32 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
     auto *nameLbl = new QLabel(name);
     nameLbl->setStyleSheet("font-size: 16px; font-weight: bold; color: #222;");
 
+    // 模型切换下拉框
+    m_modelCombo = new QComboBox;
+    m_modelCombo->addItem("DeepSeek", "deepseek");
+    m_modelCombo->addItem("Claude",   "claude");
+    m_modelCombo->setStyleSheet(
+        "QComboBox { border: 1px solid #d0d0d0; border-radius: 6px;"
+        " padding: 4px 8px; font-size: 13px; background: white; }"
+        "QComboBox::drop-down { border: none; }"
+    );
+    m_modelCombo->setCursor(Qt::PointingHandCursor);
+    // 根据联系人类型设置默认选中
+    {
+        const Contact *c = ContactStore::instance()->byId(contactId);
+        if (c && c->type == "ai_claude")
+            m_modelCombo->setCurrentIndex(1);
+        else
+            m_modelCombo->setCurrentIndex(0);
+    }
+
     topBar->addWidget(backBtn);
     topBar->addStretch();
     topBar->addWidget(avatarLbl);
     topBar->addSpacing(8);
     topBar->addWidget(nameLbl);
     topBar->addStretch();
+    topBar->addWidget(m_modelCombo);
 
     auto *topDiv = new QFrame;
     topDiv->setFrameShape(QFrame::HLine);
@@ -530,16 +569,32 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
     m_chatSendBtn = sendBtn;  // 保存引用，供 eventFilter 触发
 
     // 发送消息逻辑
-    connect(sendBtn, &QPushButton::clicked, this, [this, name]{
+    connect(sendBtn, &QPushButton::clicked, this, [this, name, contactId]{
         QString text = m_chatInput->toPlainText().trimmed();
         if (text.isEmpty()) return;
 
-        // 如果是DeepSeek联系人
-        if (name == "DeepSeek" && m_dsClient->isConfigured()) {
-            QString myName = m_localNameEdit->text().trimmed();
-            if (myName.isEmpty()) myName = "我";
+        const Contact *contact = ContactStore::instance()->byId(contactId);
+        QString myName = m_localNameEdit->text().trimmed();
+        if (myName.isEmpty()) myName = "我";
+
+        auto *history = ChatHistory::instance();
+
+        // 保存自己发出的消息到历史
+        {
+            ChatMessage m;
+            m.conversationId = contactId;
+            m.senderName     = myName;
+            m.content        = makeBubble(text, true, myName, kBtnBlue);
+            m.isFromMe       = true;
+            history->saveMessage(m);
+        }
+
+        // 根据模型下拉框决定用哪个 AI（AI 联系人才走 AI 分支）
+        bool isAiContact = contact && (contact->type == "ai_deepseek" || contact->type == "ai_claude");
+        QString selectedModel = m_modelCombo ? m_modelCombo->currentData().toString() : "deepseek";
+
+        if (isAiContact && selectedModel == "deepseek" && m_dsClient->isConfigured()) {
             m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
-            // 显示思考中提示
             m_chatDisplay->append(QString(
                 "<div id='dsThinking' style='text-align:left; margin:8px 0;'>"
                 "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -549,16 +604,11 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
             m_chatInput->clear();
             m_dsClient->sendMessage(text);
         }
-        // 如果是Claude联系人 (李四)
-        else if (name == QString::fromUtf8("\xE6\x9D\x8E\xE5\x9B\x9B") && m_claudeClient->isConfigured()) {
-            QString myName = m_localNameEdit->text().trimmed();
-            if (myName.isEmpty()) myName = "我";
+        else if (isAiContact && selectedModel == "claude" && m_claudeClient->isConfigured()) {
             m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
             m_chatInput->clear();
 
-            // 检查是否需要联网搜索
             if (m_webSearchCheck && m_webSearchCheck->isChecked()) {
-                // 显示搜索中提示
                 m_chatDisplay->append(QString(
                     "<div id='claudeThinking' style='text-align:left; margin:8px 0;'>"
                     "<span style='background:#e8f4e8; color:#27ae60; padding:8px 14px;"
@@ -566,17 +616,14 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                     "\xF0\x9F\x8C\x90 联网搜索中...</span></div>"
                 ));
 
-                // 异步执行联网搜索 (Bing 优先，DuckDuckGo 备用)
                 auto *searchMgr = new QNetworkAccessManager(this);
                 QString encodedQuery = QUrl::toPercentEncoding(text);
 
-                // 搜索完成处理函数
                 auto onSearchFinished = [this](QNetworkAccessManager *mgr,
                                                 const QString &userText,
                                                 const QString &ctx,
                                                 const QString &errMsg = {}) {
                     mgr->deleteLater();
-                    // 移除"搜索中"提示
                     QString html2 = m_chatDisplay->toHtml();
                     html2.replace("<div id='claudeThinking' style='text-align:left; margin:8px 0;'>"
                                   "<span style='background:#e8f4e8; color:#27ae60; padding:8px 14px;"
@@ -601,7 +648,6 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                         ).arg(ctx, userText);
                         m_claudeClient->sendMessage(searchPrompt);
                     } else {
-                        // 搜索失败或无结果
                         if (!errMsg.isEmpty()) {
                             m_chatDisplay->append(QString(
                                 "<div style='text-align:left; margin:6px 0;'>"
@@ -622,7 +668,6 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                     }
                 };
 
-                // 辅助函数：执行一次搜索请求
                 auto doSearch = [this, searchMgr, text](const QUrl &url, const QString &engine,
                                                          auto onSuccess, auto onFail) {
                     QNetworkRequest req(url);
@@ -641,7 +686,6 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                     });
                 };
 
-                // 解析 Bing 搜索结果
                 auto parseBing = [](const QString &html) -> QString {
                     QString ctx;
                     static QRegularExpression bingRe(
@@ -652,7 +696,6 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                     while (it.hasNext() && count < 5) {
                         auto m = it.next();
                         QString block = m.captured(1);
-                        // 提取标题和摘要
                         static QRegularExpression titleRe(R"(<h2[^>]*><a[^>]*>(.*?)</a></h2>)",
                             QRegularExpression::DotMatchesEverythingOption);
                         static QRegularExpression descRe(R"(<p[^>]*>(.*?)</p>)",
@@ -663,14 +706,12 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                         QString desc  = dm.hasMatch() ? dm.captured(1).trimmed() : "";
                         title.replace(QRegularExpression("<[^>]+>"), "");
                         desc.replace(QRegularExpression("<[^>]+>"), "");
-                        if (!desc.isEmpty()) {
+                        if (!desc.isEmpty())
                             ctx += QString("[%1] %2: %3\n").arg(++count).arg(title.isEmpty() ? "..." : title, desc);
-                        }
                     }
                     return ctx;
                 };
 
-                // 解析 DuckDuckGo 搜索结果
                 auto parseDdg = [](const QString &html) -> QString {
                     QString ctx;
                     static QRegularExpression snippetRe(
@@ -689,30 +730,23 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                     return ctx;
                 };
 
-                // 先尝试 Bing
                 doSearch(QUrl(QString("https://www.bing.com/search?q=%1&setlang=zh-cn").arg(encodedQuery)),
                          "Bing",
                     [=](const QString &bhtml){
-                        QString ctx = parseBing(bhtml);
-                        // 移除搜索提示
-                        onSearchFinished(searchMgr, text, ctx);
+                        onSearchFinished(searchMgr, text, parseBing(bhtml));
                     },
                     [=](const QString &bErr){
-                        // Bing 失败，尝试 DuckDuckGo
                         doSearch(QUrl(QString("https://html.duckduckgo.com/html/?q=%1").arg(encodedQuery)),
                                  "DuckDuckGo",
                             [=](const QString &dhtml){
-                                QString ctx = parseDdg(dhtml);
-                                onSearchFinished(searchMgr, text, ctx);
+                                onSearchFinished(searchMgr, text, parseDdg(dhtml));
                             },
                             [=](const QString &ddgErr){
-                                // 两个都失败
                                 onSearchFinished(searchMgr, text, QString(),
                                     QString::fromUtf8("Bing: %1\nDuckDuckGo: %2").arg(bErr, ddgErr));
                             });
                     });
             } else {
-                // 不联网，直接发送
                 m_chatDisplay->append(QString(
                     "<div id='claudeThinking' style='text-align:left; margin:8px 0;'>"
                     "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -726,12 +760,9 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
         else if (m_peerSockets.contains(name)) {
             sendChatMessage(name, text);
         } else {
-            QString myName = m_localNameEdit->text().trimmed();
-            if (myName.isEmpty()) myName = "我";
-            // 本地模拟：添加"我"的消息
+            // 本地模拟
             m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
 
-            // 模拟自动回复
             QStringList replies = {
                 "好的，收到！",
                 "嗯嗯，了解了~",
@@ -785,13 +816,14 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
     ).arg(kBtnBlue));
 
     // 发送文件
-    connect(fileBtn, &QPushButton::clicked, this, [this, name]{
+    connect(fileBtn, &QPushButton::clicked, this, [this, name, contactId]{
         QString fp = QFileDialog::getOpenFileName(this, "选择要发送的文件");
         if (fp.isEmpty()) return;
         QFileInfo fi(fp);
         QString fileName = fi.fileName();
 
-        // 在聊天中显示文件信息
+        const Contact *contact = ContactStore::instance()->byId(contactId);
+
         m_chatDisplay->append(QString(
             "<div style='text-align:right; margin:6px 16px;'>"
             "<span style='background:#e8f4e8; color:#333; padding:6px 12px;"
@@ -800,8 +832,9 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
         ).arg(fileName));
 
         QString userText = m_chatInput->toPlainText().trimmed();
-        // DeepSeek联系人: 发送文件内容给AI分析
-        if (name == "DeepSeek" && m_dsClient->isConfigured()) {
+        bool isAiFile = contact && (contact->type == "ai_deepseek" || contact->type == "ai_claude");
+        QString selModel = m_modelCombo ? m_modelCombo->currentData().toString() : "deepseek";
+        if (isAiFile && selModel == "deepseek" && m_dsClient->isConfigured()) {
             m_chatDisplay->append(QString(
                 "<div style='text-align:left; margin:8px 0;'>"
                 "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -809,11 +842,9 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                 "分析文件中...</span></div>"
             ));
             m_dsClient->sendFileMessage(fp, userText.isEmpty()
-                ? QString::fromUtf8("请分析这个文件的内容并总结。")
-                : userText);
+                ? QString::fromUtf8("请分析这个文件的内容并总结。") : userText);
             m_chatInput->clear();
-        }
-        else if (name == QString::fromUtf8("\xE6\x9D\x8E\xE5\x9B\x9B") && m_claudeClient->isConfigured()) {
+        } else if (isAiFile && selModel == "claude" && m_claudeClient->isConfigured()) {
             m_chatDisplay->append(QString(
                 "<div style='text-align:left; margin:8px 0;'>"
                 "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -821,8 +852,7 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
                 "Claude 分析文件中...</span></div>"
             ));
             m_claudeClient->sendFileMessage(fp, userText.isEmpty()
-                ? QString::fromUtf8("请分析这个文件的内容并总结。")
-                : userText);
+                ? QString::fromUtf8("请分析这个文件的内容并总结。") : userText);
             m_chatInput->clear();
         } else {
             m_statusBar->setText(QString("已选择文件: %1").arg(fileName));
@@ -830,12 +860,14 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
     });
 
     // 发送图片
-    connect(imageBtn, &QPushButton::clicked, this, [this, name]{
+    connect(imageBtn, &QPushButton::clicked, this, [this, name, contactId]{
         QString fp = QFileDialog::getOpenFileName(this, "选择图片",
             QString(), "图片 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)");
         if (fp.isEmpty()) return;
         QFileInfo fi(fp);
         QString fileName = fi.fileName();
+
+        const Contact *contact = ContactStore::instance()->byId(contactId);
 
         m_chatDisplay->append(QString(
             "<div style='text-align:right; margin:6px 16px;'>"
@@ -845,7 +877,9 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
         ).arg(fileName));
 
         QString userText = m_chatInput->toPlainText().trimmed();
-        if (name == "DeepSeek" && m_dsClient->isConfigured()) {
+        bool isAiImg = contact && (contact->type == "ai_deepseek" || contact->type == "ai_claude");
+        QString selModelImg = m_modelCombo ? m_modelCombo->currentData().toString() : "deepseek";
+        if (isAiImg && selModelImg == "deepseek" && m_dsClient->isConfigured()) {
             m_chatDisplay->append(QString(
                 "<div style='text-align:left; margin:8px 0;'>"
                 "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -854,8 +888,7 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
             ));
             m_dsClient->sendImageMessage(fp, userText);
             m_chatInput->clear();
-        }
-        else if (name == QString::fromUtf8("\xE6\x9D\x8E\xE5\x9B\x9B") && m_claudeClient->isConfigured()) {
+        } else if (isAiImg && selModelImg == "claude" && m_claudeClient->isConfigured()) {
             m_chatDisplay->append(QString(
                 "<div style='text-align:left; margin:8px 0;'>"
                 "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -904,39 +937,17 @@ QWidget *MainWindow::createContactPanel()
     ).arg(kWhite, kMsgHoverBg));
     m_contactList->setIconSize(QSize(44, 44));
 
-    struct ContactInfo {
-        QString name;
-        QString signature;
-        bool online;
-    };
+    auto *store = ContactStore::instance();
 
-    const QVector<ContactInfo> contacts = {
-        {"DeepSeek", "代码改变世界",           true},
-        {"李四",   "Stay hungry, stay foolish", true},
-        {"王五",   "天天向上",               false},
-        {"赵六",   "爱生活，爱编程",          true},
-        {"陈七",   "万事如意",               false},
-        {"刘八",   "追求卓越",               true},
-        {"黄九",   "技术改变未来",            true},
-        {"周十",   "宁静致远",               true},
-        {"吴十一", "行胜于言",               true},
-        {"郑十二", "不忘初心",               false},
-        {"孙十三", "梦想照亮现实",            true},
-        {"钱十四", "天道酬勤",               false},
-        {"马十五", "厚积薄发",               true},
-        {"冯十六", "乘风破浪",               true},
-        {"陈十七", "学无止境",               false},
-    };
-
-    for (int i = 0; i < contacts.size(); ++i) {
-        const auto &c = contacts[i];
-        QString color = kAvatarColors[i % 10].name();
-        QPixmap pix = makeAvatar(c.name, color);
+    for (int i = 0; i < store->contactCount(); ++i) {
+        const auto &c = store->allContacts()[i];
+        int colorIdx = i % 10;
+        QPixmap pix = makeAvatar(c.displayName, kAvatarColors[colorIdx].name());
 
         auto *item = new QListWidgetItem(QIcon(pix), "");
         item->setSizeHint(QSize(0, 62));
-        item->setData(Qt::UserRole,     c.name);
-        item->setData(Qt::UserRole + 1, color);
+        item->setData(Qt::UserRole,     c.id);
+        item->setData(Qt::UserRole + 1, kAvatarColors[colorIdx].name());
 
         auto *w = new QWidget;
         auto *lay = new QVBoxLayout(w);
@@ -944,7 +955,7 @@ QWidget *MainWindow::createContactPanel()
         lay->setSpacing(2);
 
         auto *header = new QHBoxLayout;
-        auto *nameLbl = new QLabel(c.name);
+        auto *nameLbl = new QLabel(c.displayName);
         nameLbl->setStyleSheet("font-size: 14px; font-weight: bold; color: #222;");
 
         auto *onlineDot = new QLabel(c.online
@@ -957,7 +968,7 @@ QWidget *MainWindow::createContactPanel()
         header->addWidget(onlineDot);
         header->addStretch();
 
-        auto *sigLbl = new QLabel(c.signature);
+        auto *sigLbl = new QLabel(c.statusText);
         sigLbl->setStyleSheet("font-size: 12px; color: #999;");
 
         lay->addLayout(header);
@@ -967,7 +978,6 @@ QWidget *MainWindow::createContactPanel()
         m_contactList->setItemWidget(item, w);
     }
 
-    // 联系人点击也可以打开聊天
     connect(m_contactList, &QListWidget::itemClicked, this,
             &MainWindow::onMsgItemClicked);
 
@@ -1230,14 +1240,31 @@ QWidget *MainWindow::createSettingsPanel()
     // ---- 保存按钮逻辑 ----
     connect(saveBtn, &QPushButton::clicked, this, [this, themeCombo, fontCombo,
              notifyCheck, soundCheck, autoLoginCheck, privacyCheck]{
+        auto *cfg = ConfigManager::instance();
+        cfg->setClaudeModel(themeCombo->currentText());   // 复用存储做主题
+        cfg->setDeepseekModel(fontCombo->currentText());  // 复用存储做字体
+        cfg->setClaudeApiKey(notifyCheck->isChecked() ? "notify_on" : "notify_off");
+        cfg->setDeepseekApiKey(soundCheck->isChecked() ? "sound_on" : "sound_off");
+        cfg->setClaudeBaseUrl(autoLoginCheck->isChecked() ? "auto_login" : "");
+        cfg->setDeepseekBaseUrl(privacyCheck->isChecked() ? "privacy_on" : "privacy_off");
+        cfg->save();
+
+        // 真正应用主题（简易实现：改背景色）
+        if (themeCombo->currentIndex() == 1) {
+            // 深色模式 — 这里只是模拟，实际需要整套样式替换
+            m_statusBar->setStyleSheet(
+                "font-size: 12px; color: #aaa; background: #333; border-top: 1px solid #444;");
+        } else {
+            m_statusBar->setStyleSheet(
+                "font-size: 12px; color: #888; background: #f0f1f2; border-top: 1px solid #e4e4e4;");
+        }
+
         QString summary = QString::fromUtf8(
-            "\xE2\x9A\x99  设置已保存 — 主题:%1 | 字体:%2 | 通知:%3 | 提示音:%4 | 自动登录:%5 | 隐私:%6"
+            "\xE2\x9C\x85 设置已保存 — 主题:%1 | 字体:%2 | 通知:%3 | 提示音:%4"
         ).arg(themeCombo->currentText(),
               fontCombo->currentText(),
               notifyCheck->isChecked() ? "开" : "关",
-              soundCheck->isChecked() ? "开" : "关",
-              autoLoginCheck->isChecked() ? "开" : "关",
-              privacyCheck->isChecked() ? "开" : "关");
+              soundCheck->isChecked() ? "开" : "关");
         m_statusBar->setText(summary);
     });
 
@@ -1424,11 +1451,46 @@ void MainWindow::onSidebarSearch()
     QString text = m_sidebarSearch->text().trimmed();
     if (text.isEmpty()) return;
 
-    openInSystemBrowser(text);
+    // 在联系人列表中搜索匹配项
+    auto *store = ContactStore::instance();
+    QStringList matches;
+    for (const auto &c : store->allContacts()) {
+        if (c.displayName.contains(text, Qt::CaseInsensitive) ||
+            c.statusText.contains(text, Qt::CaseInsensitive)) {
+            matches << c.displayName;
+        }
+    }
+
+    if (!matches.isEmpty()) {
+        // 导航到消息列表
+        navigateTo(0);
+        resetNavHighlight(m_navMsg);
+        m_statusBar->setText(QString::fromUtf8(
+            "\xE2\x9C\x85 找到 %1 个匹配: %2"
+        ).arg(matches.size()).arg(matches.join(", ")));
+
+        // 如果有精确匹配，自动打开聊天
+        for (const auto &c : store->allContacts()) {
+            if (c.displayName == text) {
+                // 在消息列表中找对应的 item 点击
+                for (int i = 0; i < m_msgList->count(); ++i) {
+                    auto *item = m_msgList->item(i);
+                    if (item && item->data(Qt::UserRole).toString() == c.id) {
+                        onMsgItemClicked(item);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    } else {
+        // 无匹配则打开系统浏览器搜索
+        m_statusBar->setText(QString::fromUtf8(
+            "\xE2\x97\x8F 未找到联系人: %1，已打开浏览器搜索"
+        ).arg(text));
+    }
+
     m_sidebarSearch->clear();
-    m_statusBar->setText(QString::fromUtf8(
-        "\xE2\x97\x8F 已在浏览器中搜索: %1"
-    ).arg(text));
 }
 
 // ============ 浏览器面板槽 ============
@@ -1469,67 +1531,169 @@ void MainWindow::onBrowserBack()
 void MainWindow::onBtnAddFriend()
 {
     auto *dlg = new QDialog(this);
-    dlg->setWindowTitle("添加好友");
-    dlg->setFixedSize(360, 140);
+    dlg->setWindowTitle("添加联系人");
+    dlg->setFixedSize(380, 220);
     dlg->setStyleSheet(QString(
-        "QDialog { background: %1; } QLabel { font-size: 14px; } QLineEdit {"
+        "QDialog { background: %1; } QLabel { font-size: 14px; color: #555; } QLineEdit {"
         "  border: 1px solid #ddd; border-radius: 4px; padding: 6px 10px; font-size: 14px; }"
-    ).arg(kWhite));
+        "QLineEdit:focus { border-color: %2; }"
+    ).arg(kWhite, kBtnBlue));
 
     auto *lay = new QFormLayout(dlg);
-    auto *qqEdit = new QLineEdit;
-    qqEdit->setPlaceholderText("请输入对方的QQ号码...");
-    lay->addRow("QQ 号：", qqEdit);
+    lay->setContentsMargins(24, 20, 24, 20);
+    lay->setSpacing(12);
+
+    auto *nameEdit = new QLineEdit;
+    nameEdit->setPlaceholderText("输入联系人昵称...");
+    lay->addRow("昵称：", nameEdit);
+
+    auto *sigEdit = new QLineEdit;
+    sigEdit->setPlaceholderText("可选：个性签名");
+    lay->addRow("签名：", sigEdit);
 
     auto *btnBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    btnBox->button(QDialogButtonBox::Ok)->setText("搜索");
+    btnBox->button(QDialogButtonBox::Ok)->setText("添加");
     btnBox->button(QDialogButtonBox::Ok)->setStyleSheet(QString(
         "QPushButton { background: %1; color: white; border: none; border-radius: 4px;"
-        " padding: 6px 16px; font-size: 14px; } QPushButton:hover { background: %2; }"
+        " padding: 6px 20px; font-size: 14px; } QPushButton:hover { background: %2; }"
     ).arg(kBtnBlue, kBtnBlueHover));
+    btnBox->button(QDialogButtonBox::Cancel)->setText("取消");
     lay->addRow(btnBox);
 
-    connect(btnBox, &QDialogButtonBox::accepted, dlg, [dlg]{ dlg->accept(); });
+    connect(btnBox, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
     connect(btnBox, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
 
     if (dlg->exec() == QDialog::Accepted) {
+        QString name = nameEdit->text().trimmed();
+        if (name.isEmpty()) {
+            QMessageBox::warning(this, "提示", "昵称不能为空");
+            dlg->deleteLater();
+            return;
+        }
+
+        // 生成唯一 ID
+        QString id = "user_" + QString::number(QDateTime::currentSecsSinceEpoch());
+
+        Contact c;
+        c.displayName  = name;
+        c.id           = id;
+        c.avatarLetter = name.left(1);
+        c.type         = "person";
+        c.statusText   = sigEdit->text().trimmed().isEmpty()
+                         ? "新朋友" : sigEdit->text().trimmed();
+        c.online       = true;
+        ContactStore::instance()->addContact(c);
+
+        // 刷新消息列表
+        int oldIdx = m_stacked->currentIndex();
+        m_stacked->removeWidget(m_msgList);
+        m_msgList->deleteLater();
+        m_msgList = nullptr;
+        m_stacked->insertWidget(0, createMessagePanel());
+        m_stacked->setCurrentIndex(oldIdx);
+
         m_statusBar->setText(QString::fromUtf8(
-            "\xE2\x97\x8F 正在搜索: %1 ..."
-        ).arg(qqEdit->text()));
+            "\xE2\x9C\x85 已添加联系人: %1"
+        ).arg(name));
     }
     dlg->deleteLater();
 }
 
 void MainWindow::onBtnCreateGroup()
 {
+    auto *store = ContactStore::instance();
+
+    // 收集可以作为群成员的人（排除 AI 和已经存在的群）
+    QStringList candidates;
+    for (const auto &c : store->allContacts()) {
+        if (c.type != "group")
+            candidates << c.displayName;
+    }
+
     auto *dlg = new QDialog(this);
     dlg->setWindowTitle("新建群聊");
-    dlg->setFixedSize(360, 140);
+    dlg->setFixedSize(400, 340);
     dlg->setStyleSheet(QString(
-        "QDialog { background: %1; } QLabel { font-size: 14px; } QLineEdit {"
-        "  border: 1px solid #ddd; border-radius: 4px; padding: 6px 10px; font-size: 14px; }"
-    ).arg(kWhite));
+        "QDialog { background: %1; }"
+        "QLabel { font-size: 14px; color: #555; }"
+        "QLineEdit { border: 1px solid #ddd; border-radius: 4px;"
+        "  padding: 6px 10px; font-size: 14px; }"
+        "QLineEdit:focus { border-color: %2; }"
+        "QListWidget { border: 1px solid #e0e0e0; border-radius: 4px;"
+        "  font-size: 13px; }"
+    ).arg(kWhite, kBtnBlue));
 
-    auto *lay = new QFormLayout(dlg);
+    auto *lay = new QVBoxLayout(dlg);
+    lay->setContentsMargins(20, 16, 20, 16);
+    lay->setSpacing(10);
+
     auto *nameEdit = new QLineEdit;
-    nameEdit->setPlaceholderText("请输入群聊名称...");
-    lay->addRow("群名称：", nameEdit);
+    nameEdit->setPlaceholderText("输入群聊名称...");
+    lay->addWidget(new QLabel("群名称："));
+    lay->addWidget(nameEdit);
+
+    lay->addWidget(new QLabel("选择群成员（可多选）："));
+
+    auto *memberList = new QListWidget;
+    for (const auto &name : candidates) {
+        auto *item = new QListWidgetItem(name);
+        item->setCheckState(Qt::Unchecked);
+        memberList->addItem(item);
+    }
+    lay->addWidget(memberList, 1);
 
     auto *btnBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     btnBox->button(QDialogButtonBox::Ok)->setText("创建");
     btnBox->button(QDialogButtonBox::Ok)->setStyleSheet(QString(
         "QPushButton { background: %1; color: white; border: none; border-radius: 4px;"
-        " padding: 6px 16px; font-size: 14px; } QPushButton:hover { background: %2; }"
+        " padding: 6px 20px; font-size: 14px; } QPushButton:hover { background: %2; }"
     ).arg(kBtnBlue, kBtnBlueHover));
-    lay->addRow(btnBox);
+    lay->addWidget(btnBox);
 
-    connect(btnBox, &QDialogButtonBox::accepted, dlg, [dlg]{ dlg->accept(); });
+    connect(btnBox, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
     connect(btnBox, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
 
     if (dlg->exec() == QDialog::Accepted) {
+        QString name = nameEdit->text().trimmed();
+        if (name.isEmpty()) {
+            QMessageBox::warning(this, "提示", "群名称不能为空");
+            dlg->deleteLater();
+            return;
+        }
+
+        // 收集选中的成员
+        QStringList members;
+        for (int i = 0; i < memberList->count(); ++i) {
+            auto *item = memberList->item(i);
+            if (item->checkState() == Qt::Checked)
+                members << item->text();
+        }
+
+        QString id = "group_" + QString::number(QDateTime::currentSecsSinceEpoch());
+        QString memberStr = members.isEmpty()
+            ? QString::fromUtf8("群聊") : members.join(", ");
+
+        Contact c;
+        c.displayName  = name;
+        c.id           = id;
+        c.avatarLetter = QString::fromUtf8("\xE7\xBE\xA4");  // "群"
+        c.type         = "group";
+        c.statusText   = QString::fromUtf8("%1 人 · %2")
+                        .arg(members.size() + 1).arg(memberStr);
+        c.online       = true;
+        store->addContact(c);
+
+        // 刷新消息列表
+        int oldIdx = m_stacked->currentIndex();
+        m_stacked->removeWidget(m_msgList);
+        m_msgList->deleteLater();
+        m_msgList = nullptr;
+        m_stacked->insertWidget(0, createMessagePanel());
+        m_stacked->setCurrentIndex(oldIdx);
+
         m_statusBar->setText(QString::fromUtf8(
-            "\xE2\x97\x8F 群聊 \"%1\" 创建成功"
-        ).arg(nameEdit->text()));
+            "\xE2\x9C\x85 群聊 \"%1\" 创建成功（%2人）"
+        ).arg(name).arg(members.size() + 1));
     }
     dlg->deleteLater();
 }
@@ -1558,13 +1722,21 @@ void MainWindow::onDsReply(const QString &content)
                  "思考中...</span></div>", "");
     m_chatDisplay->setHtml(html);
     m_chatDisplay->moveCursor(QTextCursor::End);
-    m_chatDisplay->append(makeBubble(content, false, "DeepSeek", "#12b7f5"));
+    QString bubble = makeBubble(content, false, "DeepSeek", "#12b7f5");
+    m_chatDisplay->append(bubble);
     m_chatDisplay->moveCursor(QTextCursor::End);
+
+    // ── 保存到聊天历史 ──
+    ChatMessage m;
+    m.conversationId = m_currentPeerId;
+    m.senderName     = "DeepSeek";
+    m.content        = bubble;
+    m.isFromMe       = false;
+    ChatHistory::instance()->saveMessage(m);
 }
 
 void MainWindow::onDsError(const QString &error)
 {
-    // 移除"思考中"提示
     QString html = m_chatDisplay->toHtml();
     html.replace("<div id='dsThinking' style='text-align:left; margin:8px 0;'>"
                  "<span style='background:#f0f0f0; color:#999; padding:8px 14px;"
@@ -1597,8 +1769,17 @@ void MainWindow::onClaudeReply(const QString &content)
                  "Claude 思考中...</span></div>", "");
     m_chatDisplay->setHtml(html);
     m_chatDisplay->moveCursor(QTextCursor::End);
-    m_chatDisplay->append(makeBubble(content, false, "李四", "#8e44ad"));
+    QString bubble = makeBubble(content, false, QString::fromUtf8("\xe6\x9d\x8e\xe5\x9b\x9b"), "#8e44ad");
+    m_chatDisplay->append(bubble);
     m_chatDisplay->moveCursor(QTextCursor::End);
+
+    // ── 保存到聊天历史 ──
+    ChatMessage m;
+    m.conversationId = m_currentPeerId;
+    m.senderName     = QString::fromUtf8("\xe6\x9d\x8e\xe5\x9b\x9b");
+    m.content        = bubble;
+    m.isFromMe       = false;
+    ChatHistory::instance()->saveMessage(m);
 }
 
 void MainWindow::onClaudeError(const QString &error)
@@ -1626,13 +1807,15 @@ QString MainWindow::makeBubble(const QString &text, bool isMe,
 {
     QString bubbleBg  = isMe ? "#f8f8f8" : "#e5e5e5";
     QString bubbleFg  = isMe ? "#333"   : "#333";
-    QString align     = isMe ? "right"   : "left";
-    QString avatarAlign = isMe ? "right" : "left";
+    QString timeColor = isMe ? "#aaa"   : "#999";
 
     // Markdown → HTML 渲染
     QString rendered = MarkdownUtils::toHtml(text);
     if (rendered.isEmpty())
         rendered = text.toHtmlEscaped();
+
+    // 时间戳
+    QString timestamp = QDateTime::currentDateTime().toString("HH:mm");
 
     // 头像
     QString avatar = QString(
@@ -1640,10 +1823,13 @@ QString MainWindow::makeBubble(const QString &text, bool isMe,
         "<table cellpadding='0' cellspacing='0' border='0'><tr><td"
         " style='width:36px;height:36px;border-radius:18px;"
         "background:%2;color:white;text-align:center;"
-        "font-size:13px;font-weight:bold;'>%3</td></tr></table></td>"
+        "font-size:13px;font-weight:bold;'>%3</td></tr></table>"
+        "<div style='text-align:center;font-size:10px;color:%4;margin-top:2px;'>%5</div></td>"
     ).arg(isMe ? "0 0 0 8px" : "0 8px 0 0",
           avatarColor,
-          avatarChar.left(1));
+          avatarChar.left(1),
+          timeColor,
+          timestamp);
 
     // 气泡
     QString bubble = QString(

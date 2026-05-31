@@ -1,4 +1,5 @@
 #include "deepseekclient.h"
+#include "configmanager.h"
 #include "constants.h"
 
 #include <QDialog>
@@ -25,18 +26,20 @@
 DeepSeekClient::DeepSeekClient(QObject *parent)
     : QObject(parent)
     , m_manager(new QNetworkAccessManager(this))
-    , m_baseUrl("https://api.deepseek.com/v1/chat/completions")
 {
+    auto *cfg = ConfigManager::instance();
+    m_apiKey  = cfg->deepseekApiKey();
+    m_baseUrl = cfg->deepseekBaseUrl();
+    m_model   = cfg->deepseekModel();
 }
 
 bool DeepSeekClient::showConfigDialog(QWidget *parent)
 {
-    if (m_configured && !m_apiKey.isEmpty())
-        return true;
+    auto *cfg = ConfigManager::instance();
 
     auto *dlg = new QDialog(parent);
-    dlg->setWindowTitle("配置 DeepSeek API - 首次对话");
-    dlg->setFixedSize(480, 240);
+    dlg->setWindowTitle("配置 DeepSeek API");
+    dlg->setFixedSize(480, 310);
     dlg->setStyleSheet(QString(
         "QDialog { background: %1; }"
         "QLabel { font-size: 13px; color: #555; }"
@@ -62,7 +65,7 @@ bool DeepSeekClient::showConfigDialog(QWidget *parent)
     auto *keyEdit = new QLineEdit;
     keyEdit->setPlaceholderText("sk-xxxxxxxxxxxxxxxxxxxxxxxx");
     keyEdit->setEchoMode(QLineEdit::Password);
-    if (!m_apiKey.isEmpty()) keyEdit->setText(m_apiKey);
+    keyEdit->setText(cfg->deepseekApiKey());
     keyLayout->addWidget(keyLabel);
     keyLayout->addWidget(keyEdit, 1);
     lay->addLayout(keyLayout);
@@ -72,11 +75,21 @@ bool DeepSeekClient::showConfigDialog(QWidget *parent)
     auto *urlLabel = new QLabel("API 地址:");
     urlLabel->setFixedWidth(70);
     auto *urlEdit = new QLineEdit;
-    urlEdit->setText(m_baseUrl.isEmpty()
-        ? "https://api.deepseek.com/v1/chat/completions" : m_baseUrl);
+    urlEdit->setText(cfg->deepseekBaseUrl());
     urlLayout->addWidget(urlLabel);
     urlLayout->addWidget(urlEdit, 1);
     lay->addLayout(urlLayout);
+
+    // Model
+    auto *modelLayout = new QHBoxLayout;
+    auto *modelLabel = new QLabel("Model:");
+    modelLabel->setFixedWidth(70);
+    auto *modelEdit = new QLineEdit;
+    modelEdit->setText(cfg->deepseekModel());
+    modelEdit->setPlaceholderText("deepseek-chat / deepseek-reasoner");
+    modelLayout->addWidget(modelLabel);
+    modelLayout->addWidget(modelEdit, 1);
+    lay->addLayout(modelLayout);
 
     auto *hint = new QLabel(QString::fromUtf8(
         "获取 Key: https://platform.deepseek.com/api_keys\n"
@@ -95,21 +108,32 @@ bool DeepSeekClient::showConfigDialog(QWidget *parent)
     btnBox->button(QDialogButtonBox::Cancel)->setText("取消");
     lay->addWidget(btnBox);
 
-    connect(btnBox, &QDialogButtonBox::accepted, dlg, [dlg]{ dlg->accept(); });
+    connect(btnBox, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
     connect(btnBox, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
 
     if (dlg->exec() == QDialog::Accepted) {
-        m_apiKey = keyEdit->text().trimmed();
-        m_baseUrl = urlEdit->text().trimmed();
-        if (m_apiKey.isEmpty()) {
+        QString newKey   = keyEdit->text().trimmed();
+        QString newUrl   = urlEdit->text().trimmed();
+        QString newModel = modelEdit->text().trimmed();
+
+        if (newKey.isEmpty()) {
             QMessageBox::warning(parent, "缺少 Key", "请输入 DeepSeek API Key");
             dlg->deleteLater();
             return false;
         }
-        if (m_baseUrl.isEmpty()) {
-            m_baseUrl = "https://api.deepseek.com/v1/chat/completions";
-        }
+        if (newModel.isEmpty())
+            newModel = "deepseek-chat";
+
+        cfg->setDeepseekApiKey(newKey);
+        cfg->setDeepseekBaseUrl(newUrl);
+        cfg->setDeepseekModel(newModel);
+        cfg->save();
+
+        m_apiKey  = newKey;
+        m_baseUrl = newUrl;
+        m_model   = newModel;
         m_configured = true;
+
         resetConversation();
         dlg->deleteLater();
         return true;
@@ -128,7 +152,7 @@ void DeepSeekClient::sendMessage(const QString &text)
     m_messages.append(userMsg);
 
     QJsonObject body;
-    body["model"] = "deepseek-chat";
+    body["model"] = m_model;
     body["messages"] = m_messages;
     body["stream"] = false;
     body["temperature"] = 0.7;

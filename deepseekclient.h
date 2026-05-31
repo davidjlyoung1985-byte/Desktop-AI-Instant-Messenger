@@ -19,6 +19,7 @@ public:
     bool isConfigured() const { return m_configured; }
     QString apiKey()    const { return m_apiKey; }
     QString baseUrl()   const { return m_baseUrl; }
+    QString model()     const { return m_model; }
 
     /// 弹出配置对话框，返回 true 表示配置成功
     bool showConfigDialog(QWidget *parent);
@@ -51,6 +52,7 @@ private:
     QJsonArray  m_messages;
     QString     m_apiKey;
     QString     m_baseUrl;
+    QString     m_model;
     QString     m_skillSuffix;   // 技能提示词后缀
     bool        m_configured = false;
 };

@@ -1,8 +1,8 @@
 #include "claudeclient.h"
+#include "configmanager.h"
 #include "constants.h"
 
 #include <QDialog>
-#include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -22,35 +22,29 @@
 #include <QImage>
 #include <QMimeDatabase>
 
-// ===== 预配置的 cc-vibe.com 默认值 =====
-static const char *kDefaultApiKey = "sk-9dd4870dee77c8f3643fab2e9bf691ef2d64ad86fc31feee8656d499dc638592";
-static const char *kDefaultBaseUrl = "https://cc-vibe.com/v1";
-static const char *kDefaultModel   = "claude-sonnet-4-20250514";
-
 ClaudeClient::ClaudeClient(QObject *parent)
     : QObject(parent)
     , m_manager(new QNetworkAccessManager(this))
-    , m_apiKey(kDefaultApiKey)
-    , m_baseUrl(kDefaultBaseUrl)
-    , m_model(kDefaultModel)
 {
+    auto *cfg = ConfigManager::instance();
+    m_apiKey  = cfg->claudeApiKey();
+    m_baseUrl = cfg->claudeBaseUrl();
+    m_model   = cfg->claudeModel();
 }
 
 bool ClaudeClient::showConfigDialog(QWidget *parent)
 {
-    // 已配置过，直接通过
-    if (m_configured && !m_apiKey.isEmpty())
-        return true;
+    auto *cfg = ConfigManager::instance();
 
     auto *dlg = new QDialog(parent);
-    dlg->setWindowTitle("Claude AI 连线 — cc-vibe.com");
-    dlg->setFixedSize(480, 200);
+    dlg->setWindowTitle(QString::fromUtf8("\xF0\x9F\xA4\x96 李四 — Claude AI 连线配置"));
+    dlg->setFixedSize(480, 300);
     dlg->setStyleSheet(QString(
         "QDialog { background: %1; }"
         "QLabel { font-size: 13px; color: #555; }"
         "QLineEdit {"
         "  border: 1px solid #d0d0d0; border-radius: 4px;"
-        "  padding: 6px 10px; font-size: 12px; background: #f5f5f5;"
+        "  padding: 6px 10px; font-size: 12px; background: #fff;"
         "}"
     ).arg(kWhite));
 
@@ -62,34 +56,45 @@ bool ClaudeClient::showConfigDialog(QWidget *parent)
     title->setStyleSheet("font-size: 16px; font-weight: bold; color: #333;");
     lay->addWidget(title);
 
-    // Key (只读显示，mask)
+    // ── Key（可编辑）──
     auto *keyLayout = new QHBoxLayout;
     auto *keyLabel = new QLabel("Key:");
     keyLabel->setFixedWidth(40);
     auto *keyEdit = new QLineEdit;
-    keyEdit->setText(m_apiKey);
+    keyEdit->setText(cfg->claudeApiKey());
+    keyEdit->setPlaceholderText("输入 API Key");
     keyEdit->setEchoMode(QLineEdit::Password);
-    keyEdit->setReadOnly(true);
     keyLayout->addWidget(keyLabel);
     keyLayout->addWidget(keyEdit, 1);
     lay->addLayout(keyLayout);
 
-    // URL (只读显示)
+    // ── URL（可编辑）──
     auto *urlLayout = new QHBoxLayout;
     auto *urlLabel = new QLabel("URL:");
     urlLabel->setFixedWidth(40);
     auto *urlEdit = new QLineEdit;
-    urlEdit->setText(m_baseUrl);
-    urlEdit->setReadOnly(true);
+    urlEdit->setText(cfg->claudeBaseUrl());
+    urlEdit->setPlaceholderText("https://cc-vibe.com/v1");
     urlLayout->addWidget(urlLabel);
     urlLayout->addWidget(urlEdit, 1);
     lay->addLayout(urlLayout);
 
-    auto *hint = new QLabel("来源: cc-vibe.com — 点击\"确认连接\"开始对话");
+    // ── Model（可编辑）──
+    auto *modelLayout = new QHBoxLayout;
+    auto *modelLabel = new QLabel("Model:");
+    modelLabel->setFixedWidth(40);
+    auto *modelEdit = new QLineEdit;
+    modelEdit->setText(cfg->claudeModel());
+    modelEdit->setPlaceholderText("claude-sonnet-4-20250514");
+    modelLayout->addWidget(modelLabel);
+    modelLayout->addWidget(modelEdit, 1);
+    lay->addLayout(modelLayout);
+
+    auto *hint = new QLabel("填写 API Key 后点击\"确认连接\"开始对话");
     hint->setStyleSheet("font-size: 11px; color: #aaa;");
     lay->addWidget(hint);
 
-    // 一个按钮
+    // 按钮
     auto *btnLayout = new QHBoxLayout;
     btnLayout->addStretch();
     auto *confirmBtn = new QPushButton("确认连接");
@@ -104,10 +109,30 @@ bool ClaudeClient::showConfigDialog(QWidget *parent)
     btnLayout->addStretch();
     lay->addLayout(btnLayout);
 
-    connect(confirmBtn, &QPushButton::clicked, dlg, [dlg]{ dlg->accept(); });
+    connect(confirmBtn, &QPushButton::clicked, dlg, &QDialog::accept);
 
     if (dlg->exec() == QDialog::Accepted) {
+        // 保存到 ConfigManager
+        QString newKey   = keyEdit->text().trimmed();
+        QString newUrl   = urlEdit->text().trimmed();
+        QString newModel = modelEdit->text().trimmed();
+
+        if (newKey.isEmpty()) {
+            QMessageBox::warning(parent, "配置不完整", "API Key 不能为空");
+            dlg->deleteLater();
+            return false;
+        }
+
+        cfg->setClaudeApiKey(newKey);
+        cfg->setClaudeBaseUrl(newUrl);
+        cfg->setClaudeModel(newModel);
+        cfg->save();
+
+        m_apiKey  = newKey;
+        m_baseUrl = newUrl;
+        m_model   = newModel;
         m_configured = true;
+
         resetConversation();
         dlg->deleteLater();
         return true;

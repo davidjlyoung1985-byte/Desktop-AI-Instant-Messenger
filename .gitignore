@@ -1,43 +1,32 @@
-# Build directory
+# Build artifacts
 build/
-
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-
-# Qt MOC generated files
-*_autogen/
-
-# IDE files
-.vs/
-.vscode/
-*.user
-
-# Compiled objects
-*.o
-*.obj
-*.moc
-*.rcc
-*.qm
-
-# Libraries
-*.dll
-*.a
-*.lib
-*.so
-*.dylib
-
-# Executables
 *.exe
+*.obj
+*.o
+*.moc
+*.autogen
 
-# Qt Creator
-*.pro.user*
+# Config with secrets — never commit
+config.json
+skills.json
 
-# Install log
+# IDE
+.vscode/
+*.pro.user
+.idea/
+
+# Database
+*.db
+
+# Misc dev artifacts
+.clangd
+compile_commands.json
 aqtinstall.log
 
-# OS files
-.DS_Store
-Thumbs.db
+# Scratch / test files (not project source)
+*.sb3
+scratch_svg.svg
+test_*.py
+compare_sb3.py
+debug_sb3.py
+generate_*.py

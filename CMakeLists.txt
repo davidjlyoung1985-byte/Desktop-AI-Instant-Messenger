@@ -6,12 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 # 使用 Qt6 (如果系统装的是 Qt5 就改成 Qt5)
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Sql)
 
 add_executable(DesktopAIMessenger WIN32
     main.cpp
     avatarutils.cpp
+    chathistory.cpp
     claudeclient.cpp
+    configmanager.cpp
+    contactstore.cpp
     deepseekclient.cpp
     markdownutils.cpp
     skillmanager.cpp
@@ -20,4 +23,4 @@ add_executable(DesktopAIMessenger WIN32
     mainwindow_network.cpp
 )
 
-target_link_libraries(DesktopAIMessenger PRIVATE Qt6::Widgets Qt6::Network)
+target_link_libraries(DesktopAIMessenger PRIVATE Qt6::Widgets Qt6::Network Qt6::Sql)
