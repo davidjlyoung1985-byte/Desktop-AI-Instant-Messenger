@@ -1,0 +1,43 @@
+# Build directory
+build/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Qt MOC generated files
+*_autogen/
+
+# IDE files
+.vs/
+.vscode/
+*.user
+
+# Compiled objects
+*.o
+*.obj
+*.moc
+*.rcc
+*.qm
+
+# Libraries
+*.dll
+*.a
+*.lib
+*.so
+*.dylib
+
+# Executables
+*.exe
+
+# Qt Creator
+*.pro.user*
+
+# Install log
+aqtinstall.log
+
+# OS files
+.DS_Store
+Thumbs.db
