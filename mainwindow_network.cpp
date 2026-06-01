@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 #include "constants.h"
+#include "chathistory.h"
+#include "contactstore.h"
 
 #include <QAbstractSocket>
 #include <QFrame>
@@ -348,6 +350,10 @@ void MainWindow::sendChatMessage(const QString &peerName, const QString &text)
         if (myName.isEmpty()) myName = "我";
         m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
     }
+
+    // 刷新预览
+    const Contact *c = ContactStore::instance()->byDisplayName(peerName);
+    if (c) refreshMessagePreview(c->id);
 }
 
 void MainWindow::displayReceivedMessage(const QString &peerName, const QString &text)
@@ -359,6 +365,10 @@ void MainWindow::displayReceivedMessage(const QString &peerName, const QString &
             "\xF0\x9F\x93\xA9 %1 发来消息: %2"
         ).arg(peerName, text.left(30)));
     }
+
+    // 刷新预览
+    const Contact *c = ContactStore::instance()->byDisplayName(peerName);
+    if (c) refreshMessagePreview(c->id);
 }
 
 void MainWindow::updateNetworkStatus()

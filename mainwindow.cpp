@@ -23,6 +23,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -345,6 +346,7 @@ QWidget *MainWindow::createMessagePanel()
     ).arg(kWhite, kMsgHoverBg));
 
     m_msgList->setIconSize(QSize(44, 44));
+    m_msgList->setContextMenuPolicy(Qt::CustomContextMenu);
 
     auto *store = ContactStore::instance();
     auto *history = ChatHistory::instance();
@@ -400,6 +402,8 @@ QWidget *MainWindow::createMessagePanel()
 
     connect(m_msgList, &QListWidget::itemClicked,
             this, &MainWindow::onMsgItemClicked);
+    connect(m_msgList, &QWidget::customContextMenuRequested,
+            this, &MainWindow::onMsgListContextMenu);
 
     return m_msgList;
 }
@@ -773,6 +777,7 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
             };
             QString reply = replies[QRandomGenerator::global()->bounded(replies.size())];
             m_chatDisplay->append(makeBubble(reply, false, name, m_currentPeerColor));
+            refreshMessagePreview(contactId);
         }
 
         m_chatInput->clear();
@@ -929,6 +934,27 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
 
 QWidget *MainWindow::createContactPanel()
 {
+    auto *outer = new QWidget;
+    outer->setStyleSheet(QString("background: %1;").arg(kWhite));
+
+    auto *outerLay = new QVBoxLayout(outer);
+    outerLay->setContentsMargins(0, 0, 0, 0);
+    outerLay->setSpacing(0);
+
+    // 搜索栏
+    auto *searchBar = new QHBoxLayout;
+    searchBar->setContentsMargins(12, 8, 12, 4);
+
+    auto *contactSearch = new QLineEdit;
+    contactSearch->setPlaceholderText(QString::fromUtf8("\xF0\x9F\x94\x8D 搜索联系人..."));
+    contactSearch->setFixedHeight(32);
+    contactSearch->setStyleSheet(QString(
+        "QLineEdit { border: 1px solid #d0d0d0; border-radius: 16px;"
+        "  padding: 2px 14px; background: %1; font-size: 13px; }"
+        "QLineEdit:focus { border-color: %2; }"
+    ).arg(kToolbarBg, kBtnBlue));
+    searchBar->addWidget(contactSearch);
+
     m_contactList = new QListWidget;
     m_contactList->setStyleSheet(QString(
         "QListWidget { border: none; background: %1; outline: none; }"
@@ -936,6 +962,7 @@ QWidget *MainWindow::createContactPanel()
         "QListWidget::item:hover { background: %2; }"
     ).arg(kWhite, kMsgHoverBg));
     m_contactList->setIconSize(QSize(44, 44));
+    m_contactList->setContextMenuPolicy(Qt::CustomContextMenu);
 
     auto *store = ContactStore::instance();
 
@@ -980,8 +1007,27 @@ QWidget *MainWindow::createContactPanel()
 
     connect(m_contactList, &QListWidget::itemClicked, this,
             &MainWindow::onMsgItemClicked);
+    connect(m_contactList, &QWidget::customContextMenuRequested,
+            this, &MainWindow::onContactListContextMenu);
 
-    return m_contactList;
+    // 搜索过滤
+    connect(contactSearch, &QLineEdit::textChanged, this, [this, contactSearch]{
+        QString filter = contactSearch->text().trimmed();
+        for (int i = 0; i < m_contactList->count(); ++i) {
+            auto *item = m_contactList->item(i);
+            if (!item) continue;
+            QString id = item->data(Qt::UserRole).toString();
+            const Contact *c = ContactStore::instance()->byId(id);
+            bool match = !c || filter.isEmpty()
+                || c->displayName.contains(filter, Qt::CaseInsensitive);
+            item->setHidden(!match);
+        }
+    });
+
+    outerLay->addLayout(searchBar);
+    outerLay->addWidget(m_contactList, 1);
+
+    return outer;
 }
 
 // ============ 动态面板 ============
@@ -1733,6 +1779,7 @@ void MainWindow::onDsReply(const QString &content)
     m.content        = bubble;
     m.isFromMe       = false;
     ChatHistory::instance()->saveMessage(m);
+    refreshMessagePreview(m_currentPeerId);
 }
 
 void MainWindow::onDsError(const QString &error)
@@ -1780,6 +1827,7 @@ void MainWindow::onClaudeReply(const QString &content)
     m.content        = bubble;
     m.isFromMe       = false;
     ChatHistory::instance()->saveMessage(m);
+    refreshMessagePreview(m_currentPeerId);
 }
 
 void MainWindow::onClaudeError(const QString &error)
@@ -2024,6 +2072,156 @@ void MainWindow::showSkillDialog()
 
     dlg->exec();
     dlg->deleteLater();
+}
+
+// ============ 消息列表上下文菜单 ============
+
+void MainWindow::onMsgListContextMenu(const QPoint &pos)
+{
+    auto *item = m_msgList->itemAt(pos);
+    if (!item) return;
+
+    QString contactId = item->data(Qt::UserRole).toString();
+    const Contact *contact = ContactStore::instance()->byId(contactId);
+    if (!contact) return;
+
+    QMenu menu;
+    menu.setStyleSheet(
+        "QMenu { background: white; border: 1px solid #d0d0d0; border-radius: 6px; padding: 4px; }"
+        "QMenu::item { padding: 8px 24px; font-size: 13px; }"
+        "QMenu::item:hover { background: #eaf4fe; color: #12b7f5; }"
+    );
+
+    QAction *chatAction = menu.addAction(QString::fromUtf8("\xF0\x9F\x92\xAC 打开聊天"));
+    menu.addSeparator();
+    QAction *delAction = menu.addAction(QString::fromUtf8("\xE2\x9D\x8C 删除会话"));
+
+    // 非内置联系人可删除
+    if (contact->type == "ai_deepseek" || contact->type == "ai_claude")
+        delAction->setEnabled(false);
+
+    QAction *chosen = menu.exec(m_msgList->viewport()->mapToGlobal(pos));
+
+    if (chosen == chatAction) {
+        onMsgItemClicked(item);
+    } else if (chosen == delAction) {
+        auto confirm = QMessageBox::question(this, "确认删除",
+            QString::fromUtf8("确定要删除与 \"%1\" 的会话吗？\n聊天记录也将被清除。")
+            .arg(contact->displayName),
+            QMessageBox::Yes | QMessageBox::No);
+        if (confirm == QMessageBox::Yes) {
+            ChatHistory::instance()->deleteConversation(contactId);
+            ContactStore::instance()->removeContact(contactId);
+
+            // 如果正在与该联系人聊天，返回消息列表
+            if (m_currentPeerId == contactId) {
+                onChatBack();
+            }
+
+            // 重建消息列表和联系人列表
+            int oldIdx = m_stacked->currentIndex();
+            m_stacked->removeWidget(m_msgList);
+            m_msgList->deleteLater();
+            m_msgList = nullptr;
+            m_stacked->insertWidget(0, createMessagePanel());
+            m_stacked->setCurrentIndex(oldIdx);
+
+            m_statusBar->setText(QString::fromUtf8(
+                "\xE2\x9C\x88 已删除: %1").arg(contact->displayName));
+        }
+    }
+}
+
+// ============ 联系人列表上下文菜单 ============
+
+void MainWindow::onContactListContextMenu(const QPoint &pos)
+{
+    auto *item = m_contactList->itemAt(pos);
+    if (!item) return;
+
+    QString contactId = item->data(Qt::UserRole).toString();
+    const Contact *contact = ContactStore::instance()->byId(contactId);
+    if (!contact) return;
+
+    QMenu menu;
+    menu.setStyleSheet(
+        "QMenu { background: white; border: 1px solid #d0d0d0; border-radius: 6px; padding: 4px; }"
+        "QMenu::item { padding: 8px 24px; font-size: 13px; }"
+        "QMenu::item:hover { background: #eaf4fe; color: #12b7f5; }"
+    );
+
+    QAction *chatAction = menu.addAction(QString::fromUtf8("\xF0\x9F\x92\xAC 开始聊天"));
+    menu.addSeparator();
+    QAction *delAction = menu.addAction(QString::fromUtf8("\xE2\x9D\x8C 删除联系人"));
+
+    if (contact->type == "ai_deepseek" || contact->type == "ai_claude")
+        delAction->setEnabled(false);
+
+    QAction *chosen = menu.exec(m_contactList->viewport()->mapToGlobal(pos));
+
+    if (chosen == chatAction) {
+        // 在消息列表中找对应 item 点击
+        for (int i = 0; i < m_msgList->count(); ++i) {
+            auto *msgItem = m_msgList->item(i);
+            if (msgItem && msgItem->data(Qt::UserRole).toString() == contactId) {
+                onMsgItemClicked(msgItem);
+                navigateTo(0);
+                resetNavHighlight(m_navMsg);
+                break;
+            }
+        }
+    } else if (chosen == delAction) {
+        auto confirm = QMessageBox::question(this, "确认删除",
+            QString::fromUtf8("确定要删除联系人 \"%1\" 吗？").arg(contact->displayName),
+            QMessageBox::Yes | QMessageBox::No);
+        if (confirm == QMessageBox::Yes) {
+            ContactStore::instance()->removeContact(contactId);
+            if (m_currentPeerId == contactId) onChatBack();
+
+            int oldIdx = m_stacked->currentIndex();
+            m_stacked->removeWidget(m_msgList);
+            m_msgList->deleteLater();
+            m_msgList = nullptr;
+            m_stacked->insertWidget(0, createMessagePanel());
+            m_stacked->setCurrentIndex(oldIdx);
+
+            m_statusBar->setText(QString::fromUtf8(
+                "\xE2\x9C\x88 已删除: %1").arg(contact->displayName));
+        }
+    }
+}
+
+// ============ 刷新消息预览 ============
+
+void MainWindow::refreshMessagePreview(const QString &contactId)
+{
+    if (!m_msgList) return;
+
+    for (int i = 0; i < m_msgList->count(); ++i) {
+        auto *item = m_msgList->item(i);
+        if (!item || item->data(Qt::UserRole).toString() != contactId) continue;
+
+        auto *w = m_msgList->itemWidget(item);
+        if (!w) break;
+
+        // 找所有 QLabel 子控件，更新摘要
+        auto labels = w->findChildren<QLabel*>(QString(), Qt::FindDirectChildrenOnly);
+        for (auto *lbl : labels) {
+            // 摘要标签（颜色为 #999 的）
+            if (lbl->styleSheet().contains("#999")) {
+                ChatMessage last = ChatHistory::instance()->lastMessage(contactId);
+                if (last.id > 0) {
+                    QString preview = last.content;
+                    preview.remove(QRegularExpression("<[^>]*>"));
+                    preview = preview.left(20);
+                    if (last.content.length() > 20) preview += "...";
+                    lbl->setText(preview);
+                }
+                break;
+            }
+        }
+        break;
+    }
 }
 
 // ============ 事件过滤器 - 回车发送消息 ============

@@ -12,6 +12,7 @@ class QListWidget;
 class QListWidgetItem;
 class QPushButton;
 class QStackedWidget;
+class QMenu;
 class QTcpServer;
 class QTcpSocket;
 class QTextEdit;
@@ -66,6 +67,10 @@ private slots:
 
     void showSkillDialog();   // 技能管理对话框
 
+    // ---- 上下文菜单 ----
+    void onMsgListContextMenu(const QPoint &pos);
+    void onContactListContextMenu(const QPoint &pos);
+
 private:
     // ===== 核心 ====
     void setupUI();
@@ -88,6 +93,9 @@ private:
                        const QString &avatarChar, const QString &avatarColor);
     void sendChatMessage(const QString &peerName, const QString &text);
     void displayReceivedMessage(const QString &peerName, const QString &text);
+
+    // ===== 消息列表 ====
+    void refreshMessagePreview(const QString &contactId);
 
     // ===== 网络 ====
     QStringList localIPs() const;
