@@ -66,6 +66,7 @@ private slots:
     void onClaudeError(const QString &error);
 
     void showSkillDialog();   // 技能管理对话框
+    void applyAppTheme();      // 应用主题样式
 
     // ---- 上下文菜单 ----
     void onMsgListContextMenu(const QPoint &pos);
@@ -96,6 +97,7 @@ private:
 
     // ===== 消息列表 ====
     void refreshMessagePreview(const QString &contactId);
+    void refreshMsgList();                            // 重建消息列表（用于联系人变更后）
 
     // ===== 网络 ====
     QStringList localIPs() const;

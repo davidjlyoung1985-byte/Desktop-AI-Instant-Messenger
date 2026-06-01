@@ -30,6 +30,23 @@ public:
     QString deepseekModel()   const;
     void    setDeepseekModel(const QString &model);
 
+    // ── UI 设置 ──
+    enum UiTheme { ThemeLight = 0, ThemeDark = 1, ThemeSystem = 2 };
+    enum UiFontSize { FontSmall = 0, FontNormal = 1, FontLarge = 2, FontXLarge = 3 };
+
+    UiTheme   uiTheme() const;
+    void      setUiTheme(UiTheme theme);
+    UiFontSize uiFontSize() const;
+    void      setUiFontSize(UiFontSize size);
+    bool      uiNotify() const;
+    void      setUiNotify(bool on);
+    bool      uiSound() const;
+    void      setUiSound(bool on);
+    bool      uiAutoLogin() const;
+    void      setUiAutoLogin(bool on);
+    bool      uiPrivacy() const;
+    void      setUiPrivacy(bool on);
+
     // ── 持久化 ──
     void save();
     void load();

@@ -134,6 +134,8 @@ QWidget *MainWindow::createNetworkBar()
 QStringList MainWindow::localIPs() const
 {
     QStringList ips;
+    // 始终把 127.0.0.1 放在最前面（同机测试首选）
+    ips.append("127.0.0.1");
     const QList<QHostAddress> addrs = QNetworkInterface::allAddresses();
     for (const auto &addr : addrs) {
         if (addr.protocol() == QAbstractSocket::IPv4Protocol &&
@@ -141,7 +143,6 @@ QStringList MainWindow::localIPs() const
             ips.append(addr.toString());
         }
     }
-    if (ips.isEmpty()) ips.append("127.0.0.1");
     return ips;
 }
 
@@ -174,6 +175,36 @@ void MainWindow::onStartListen()
         m_statusBar->setText(QString::fromUtf8(
             "\xF0\x9F\x8C\x90 正在监听端口 %1 | 本机: %2 | 等待好友连接..."
         ).arg(m_listenPort).arg(ips.join(", ")));
+
+        // 弹窗显示本机 IP，方便另一台机器连接
+        QString ipList;
+        for (int i = 0; i < ips.size(); ++i) {
+            ipList += (i == 0 ? "" : "\n") + ips[i];
+        }
+        QMessageBox::information(this, "监听已启动",
+            QString("端口 %1 监听中\n\n"
+                    "同机测试: 另一实例连接 127.0.0.1:%1\n"
+                    "跨机测试: 另一机器连接下方任一 IP:%1\n\n"
+                    "本机 IP:\n%2\n\n"
+                    "提示: 首次运行可能需允许防火墙")
+            .arg(m_listenPort).arg(ipList));
+
+        // 自检测试 — 确认监听确实可连
+        auto *testSock = new QTcpSocket(this);
+        connect(testSock, &QTcpSocket::connected, this, [this, testSock](){
+            m_statusBar->setText(m_statusBar->text() + QString::fromUtf8(" \xE2\x9C\x85 端口可达"));
+            testSock->close();
+            testSock->deleteLater();
+        });
+        typedef void (QAbstractSocket::*QAbstractSocketError)(QAbstractSocket::SocketError);
+        connect(testSock, static_cast<QAbstractSocketError>(&QAbstractSocket::errorOccurred),
+                this, [this, testSock](QAbstractSocket::SocketError){
+            m_statusBar->setText(m_statusBar->text() + QString::fromUtf8(
+                " \xE2\x9A\xA0 端口不可达 (%1) — 请检查防火墙")
+                .arg(testSock->errorString()));
+            testSock->deleteLater();
+        });
+        testSock->connectToHost(QHostAddress::LocalHost, m_listenPort);
     } else {
         QMessageBox::warning(this, "错误",
             QString("无法在端口 %1 上启动监听:\n%2")
@@ -275,7 +306,10 @@ void MainWindow::onReadyRead()
         if (line.startsWith("NAME:")) {
             QString peerName = line.mid(5).trimmed();
             if (peerName.isEmpty()) peerName = "未知";
+            QString peerAddr = socket->peerAddress().toString();
+            quint16 peerPort = socket->peerPort();
 
+            // 更新 m_peerSockets 映射
             if (m_peerSockets.contains(peerName)) {
                 QTcpSocket *old = m_peerSockets.take(peerName);
                 old->close();
@@ -283,14 +317,23 @@ void MainWindow::onReadyRead()
             }
             m_peerSockets[peerName] = socket;
             updateNetworkStatus();
-            m_statusBar->setText(QString::fromUtf8(
-                "\xF0\x9F\x94\x97 已与 %1 建立连接").arg(peerName));
 
+            // 自动添加到联系人列表
+            ContactStore::instance()->addTcpPeer(peerName, peerAddr, peerPort);
+
+            // 刷新消息列表（新增的联系人会出现在对话列表里）
+            refreshMsgList();
+
+            m_statusBar->setText(QString::fromUtf8(
+                "\xF0\x9F\x94\x97 已与 %1 建立连接 (%2:%3)")
+                .arg(peerName, peerAddr).arg(peerPort));
+
+            // 如果当前聊天就是该 peer，显示上线提示
             if (m_chatDisplay && m_currentChatPeer == peerName) {
                 m_chatDisplay->append(QString(
                     "<div style='text-align:center; color:#27ae60; font-size:12px; margin:8px 0;'>"
-                    "%1 已上线，消息将通过网络发送</div>"
-                ).arg(peerName));
+                    "%1 已上线 (%2:%3)，消息将通过局域网发送</div>"
+                ).arg(peerName, peerAddr).arg(peerPort));
             }
         }
         else if (line.startsWith("MSG:")) {
@@ -302,7 +345,8 @@ void MainWindow::onReadyRead()
                     break;
                 }
             }
-            displayReceivedMessage(peerName.isEmpty() ? "未知" : peerName, msgText);
+            if (peerName.isEmpty()) peerName = "未知";
+            displayReceivedMessage(peerName, msgText);
         }
     }
 }
@@ -313,9 +357,13 @@ void MainWindow::onPeerDisconnected()
     if (!socket) return;
 
     QString peerName;
+    QString peerAddr;
+    quint16 peerPort = 0;
     for (auto it = m_peerSockets.begin(); it != m_peerSockets.end(); ++it) {
         if (it.value() == socket) {
             peerName = it.key();
+            peerAddr = socket->peerAddress().toString();
+            peerPort = socket->peerPort();
             m_peerSockets.erase(it);
             break;
         }
@@ -325,11 +373,20 @@ void MainWindow::onPeerDisconnected()
     updateNetworkStatus();
 
     if (!peerName.isEmpty()) {
+        // 更新联系人状态为离线
+        QString id = QString("tcp:%1:%2").arg(peerAddr).arg(peerPort);
+        const Contact *existing = ContactStore::instance()->byId(id);
+        if (existing) {
+            Contact updated = *existing;
+            updated.online = false;
+            ContactStore::instance()->updateContact(id, updated);
+        }
+
         m_statusBar->setText(QString("%1 已断开连接").arg(peerName));
         if (m_chatDisplay && m_currentChatPeer == peerName) {
             m_chatDisplay->append(QString(
                 "<div style='text-align:center; color:#e74c3c; font-size:12px; margin:8px 0;'>"
-                "%1 已断开连接，消息将切换为本地模拟</div>"
+                "%1 已断开连接，消息将无法送达</div>"
             ).arg(peerName));
         }
     }
@@ -345,29 +402,40 @@ void MainWindow::sendChatMessage(const QString &peerName, const QString &text)
     QString msg = "MSG:" + text + "\n";
     socket->write(msg.toUtf8());
 
+    QString myName = m_localNameEdit->text().trimmed();
+    if (myName.isEmpty()) myName = "我";
+
     if (m_chatDisplay) {
-        QString myName = m_localNameEdit->text().trimmed();
-        if (myName.isEmpty()) myName = "我";
         m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
     }
-
-    // 刷新预览
-    const Contact *c = ContactStore::instance()->byDisplayName(peerName);
-    if (c) refreshMessagePreview(c->id);
 }
 
 void MainWindow::displayReceivedMessage(const QString &peerName, const QString &text)
 {
-    if (m_chatDisplay && m_currentChatPeer == peerName) {
-        m_chatDisplay->append(makeBubble(text, false, peerName, m_currentPeerColor));
-    } else {
-        m_statusBar->setText(QString::fromUtf8(
-            "\xF0\x9F\x93\xA9 %1 发来消息: %2"
-        ).arg(peerName, text.left(30)));
+    const Contact *c = ContactStore::instance()->byDisplayName(peerName);
+    QString contactId = c ? c->id : peerName;
+    QString avatarColor = c ? kAvatarColors[qHash(contactId) % 10].name() : kBtnBlue;
+
+    // 保存到聊天历史
+    {
+        ChatMessage m;
+        m.conversationId = contactId;
+        m.senderName     = peerName;
+        m.content        = makeBubble(text, false, peerName, avatarColor);
+        m.isFromMe       = false;
+        ChatHistory::instance()->saveMessage(m);
     }
 
-    // 刷新预览
-    const Contact *c = ContactStore::instance()->byDisplayName(peerName);
+    if (m_chatDisplay && m_currentChatPeer == peerName) {
+        m_chatDisplay->append(makeBubble(text, false, peerName, avatarColor));
+    } else {
+        // 不在当前聊天窗口 — 在状态栏显示通知并标记未读
+        m_statusBar->setText(QString::fromUtf8(
+            "\xF0\x9F\x93\xA9 %1 发来消息: %2"
+        ).arg(peerName, text.left(40)));
+    }
+
+    // 刷新消息列表预览
     if (c) refreshMessagePreview(c->id);
 }
 
@@ -382,8 +450,10 @@ void MainWindow::updateNetworkStatus()
             .arg(m_listenPort).arg(peerCount));
         m_netStatusLabel->setStyleSheet("font-size: 12px; color: #27ae60; border: none; font-weight: bold;");
     } else if (listening) {
+        QStringList ips = localIPs();
         m_netStatusLabel->setText(QString::fromUtf8(
-            "\xF0\x9F\x9F\xA1 监听中:%1 | 等待连接...").arg(m_listenPort));
+            "\xF0\x9F\x9F\xA1 监听:%1 | 本机IP: %2 | 等待连接...")
+            .arg(m_listenPort).arg(ips.join(",")));
         m_netStatusLabel->setStyleSheet("font-size: 12px; color: #f39c12; border: none; font-weight: bold;");
     } else if (peerCount > 0) {
         m_netStatusLabel->setText(QString::fromUtf8(

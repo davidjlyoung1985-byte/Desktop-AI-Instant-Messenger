@@ -128,3 +128,59 @@ void ConfigManager::setDeepseekModel(const QString &model)
 {
     m_data["deepseek/model"] = model;
 }
+
+// ─── UI 设置存取 ──────────────────────────────────────────────────────
+
+ConfigManager::UiTheme ConfigManager::uiTheme() const
+{
+    return static_cast<UiTheme>(m_data.value("ui/theme").toInt(ThemeLight));
+}
+void ConfigManager::setUiTheme(UiTheme theme)
+{
+    m_data["ui/theme"] = static_cast<int>(theme);
+}
+
+ConfigManager::UiFontSize ConfigManager::uiFontSize() const
+{
+    return static_cast<UiFontSize>(m_data.value("ui/fontSize").toInt(FontNormal));
+}
+void ConfigManager::setUiFontSize(UiFontSize size)
+{
+    m_data["ui/fontSize"] = static_cast<int>(size);
+}
+
+bool ConfigManager::uiNotify() const
+{
+    return m_data.value("ui/notify").toBool(true);
+}
+void ConfigManager::setUiNotify(bool on)
+{
+    m_data["ui/notify"] = on;
+}
+
+bool ConfigManager::uiSound() const
+{
+    return m_data.value("ui/sound").toBool(true);
+}
+void ConfigManager::setUiSound(bool on)
+{
+    m_data["ui/sound"] = on;
+}
+
+bool ConfigManager::uiAutoLogin() const
+{
+    return m_data.value("ui/autoLogin").toBool(false);
+}
+void ConfigManager::setUiAutoLogin(bool on)
+{
+    m_data["ui/autoLogin"] = on;
+}
+
+bool ConfigManager::uiPrivacy() const
+{
+    return m_data.value("ui/privacy").toBool(false);
+}
+void ConfigManager::setUiPrivacy(bool on)
+{
+    m_data["ui/privacy"] = on;
+}

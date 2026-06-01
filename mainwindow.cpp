@@ -259,6 +259,107 @@ void MainWindow::setupUI()
     connect(m_claudeClient, &ClaudeClient::thinking,      this, &MainWindow::onClaudeThinking);
     connect(m_claudeClient, &ClaudeClient::replyReceived, this, &MainWindow::onClaudeReply);
     connect(m_claudeClient, &ClaudeClient::errorOccurred, this, &MainWindow::onClaudeError);
+
+    // 加载用户设置
+    applyAppTheme();
+}
+
+// ============ 主题切换 ============
+
+void MainWindow::applyAppTheme()
+{
+    auto *cfg = ConfigManager::instance();
+    bool isDark = (cfg->uiTheme() == ConfigManager::ThemeDark);
+
+    // 字体大小映射
+    static const char *fontSizes[] = {"12px", "14px", "16px", "18px"};
+    const char *baseFont = fontSizes[cfg->uiFontSize()];
+
+    if (isDark) {
+        qApp->setStyleSheet(QString(R"(
+            /* 全局基础 */
+            QWidget {
+                font-size: %1;
+                color: #cccccc;
+                background-color: #1e1e1e;
+            }
+            /* 列表控件 */
+            QListWidget {
+                background: #252526;
+                border: none;
+                outline: none;
+                color: #cccccc;
+            }
+            QListWidget::item { padding: 4px; }
+            QListWidget::item:hover { background: #2a2d2e; }
+            QListWidget::item:selected { background: #094771; color: #ffffff; }
+            /* 输入框 */
+            QLineEdit, QTextEdit {
+                background: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 4px 8px;
+                color: #e0e0e0;
+            }
+            QLineEdit:focus, QTextEdit:focus { border-color: #12b7f5; }
+            /* 下拉框 */
+            QComboBox {
+                background: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 4px 10px;
+                color: #e0e0e0;
+            }
+            QComboBox:hover { border-color: #12b7f5; }
+            QComboBox QAbstractItemView {
+                background: #2d2d2d;
+                color: #cccccc;
+                selection-background-color: #094771;
+            }
+            /* 复选框 */
+            QCheckBox { color: #cccccc; spacing: 8px; }
+            /* 标签 */
+            QLabel { color: #cccccc; background: transparent; }
+            /* 滚动条 */
+            QScrollBar:vertical {
+                background: #1e1e1e; width: 8px;
+            }
+            QScrollBar::handle:vertical {
+                background: #555555; border-radius: 4px; min-height: 30px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            /* 分割线 */
+            QFrame[HLine="true"] { color: #444444; }
+        )").arg(baseFont));
+    } else {
+        qApp->setStyleSheet(QString(R"(
+            QWidget { font-size: %1; }
+            QListWidget { background: white; border: none; outline: none; color: #333; }
+            QListWidget::item { padding: 4px; }
+            QListWidget::item:hover { background: #eaf4fe; }
+            QListWidget::item:selected { background: #cce8fd; color: #333; }
+            QLineEdit, QTextEdit {
+                background: white; border: 1px solid #d0d0d0; border-radius: 4px;
+                padding: 4px 8px; color: #333;
+            }
+            QLineEdit:focus, QTextEdit:focus { border-color: #12b7f5; }
+            QComboBox { background: white; border: 1px solid #d0d0d0; border-radius: 4px; }
+            QLabel { color: #333; background: transparent; }
+            QCheckBox { color: #555; spacing: 8px; }
+            QScrollBar:vertical { background: #f0f0f0; width: 8px; }
+            QScrollBar::handle:vertical {
+                background: #c1c1c1; border-radius: 4px; min-height: 30px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        )").arg(baseFont));
+    }
+
+    // 更新状态栏
+    if (isDark) {
+        m_statusBar->setStyleSheet("font-size:12px;color:#aaa;background:#333;border-top:1px solid #444;");
+    } else {
+        m_statusBar->setStyleSheet("font-size:12px;color:#888;background:#f0f1f2;border-top:1px solid #e4e4e4;");
+    }
 }
 
 // ============ 左侧边栏 ============
@@ -526,7 +627,25 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
     topBar->addStretch();
     topBar->addWidget(avatarLbl);
     topBar->addSpacing(8);
-    topBar->addWidget(nameLbl);
+
+    auto *nameCol = new QVBoxLayout;
+    nameCol->setSpacing(2);
+    nameCol->addWidget(nameLbl);
+
+    // 如果是群聊，显示成员信息
+    {
+        const Contact *c = ContactStore::instance()->byId(contactId);
+        if (c && c->type == "group" && !c->peerAddress.isEmpty()) {
+            QString members = c->peerAddress;
+            members.replace(",", "、");
+            auto *memberLbl = new QLabel(QString::fromUtf8(
+                "\xF0\x9F\x91\xA5 成员: %1").arg(members));
+            memberLbl->setStyleSheet("font-size: 11px; color: #999;");
+            nameCol->addWidget(memberLbl);
+        }
+    }
+
+    topBar->addLayout(nameCol);
     topBar->addStretch();
     topBar->addWidget(m_modelCombo);
 
@@ -763,8 +882,16 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
         // 如果对方在线（有网络连接），通过网络发送
         else if (m_peerSockets.contains(name)) {
             sendChatMessage(name, text);
+        }
+        // TCP 联系人但未连接 — 提示离线
+        else if (contact && (contact->type == "tcp_peer")) {
+            m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
+            m_chatDisplay->append(QString(
+                "<div style='text-align:center; color:#e74c3c; font-size:12px; margin:8px 0;'>"
+                "%1 当前离线，消息无法送达</div>"
+            ).arg(name));
         } else {
-            // 本地模拟
+            // 本地模拟 — 普通联系人
             m_chatDisplay->append(makeBubble(text, true, myName, kBtnBlue));
 
             QStringList replies = {
@@ -777,6 +904,16 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
             };
             QString reply = replies[QRandomGenerator::global()->bounded(replies.size())];
             m_chatDisplay->append(makeBubble(reply, false, name, m_currentPeerColor));
+
+            // 保存模拟回复
+            {
+                ChatMessage m;
+                m.conversationId = contactId;
+                m.senderName     = name;
+                m.content        = makeBubble(reply, false, name, m_currentPeerColor);
+                m.isFromMe       = false;
+                ChatHistory::instance()->saveMessage(m);
+            }
             refreshMessagePreview(contactId);
         }
 
@@ -809,16 +946,21 @@ QWidget *MainWindow::createChatDetailPanel(const QString &name,
     auto *imageBtn = makeAttach(QString::fromUtf8("\xF0\x9F\x96\xBC 发送图片"));
     auto *skillBtn = makeAttach(QString::fromUtf8("\xF0\x9F\xA7\xA9 技能"));
 
-    // 联网搜索复选框
+    // 联网搜索复选框 — 用 ✔ 标记选中状态
     m_webSearchCheck = new QCheckBox(QString::fromUtf8("\xF0\x9F\x8C\x90 联网搜索"));
     m_webSearchCheck->setChecked(false);
     m_webSearchCheck->setCursor(Qt::PointingHandCursor);
     m_webSearchCheck->setStyleSheet(QString(
         "QCheckBox { color: #888; font-size: 12px; spacing: 4px; }"
         "QCheckBox:hover { color: %1; }"
-        "QCheckBox::indicator { width: 16px; height: 16px; }"
-        "QCheckBox::indicator:checked { background: %1; border: 1px solid %1; border-radius: 3px; }"
+        "QCheckBox::indicator { width: 0px; height: 0px; }"
     ).arg(kBtnBlue));
+    connect(m_webSearchCheck, &QCheckBox::toggled, this, [this](bool checked){
+        if (checked)
+            m_webSearchCheck->setText(QString::fromUtf8("\xE2\x9C\x94 \xF0\x9F\x8C\x90 联网搜索"));
+        else
+            m_webSearchCheck->setText(QString::fromUtf8("\xF0\x9F\x8C\x90 联网搜索"));
+    });
 
     // 发送文件
     connect(fileBtn, &QPushButton::clicked, this, [this, name, contactId]{
@@ -1283,27 +1425,29 @@ QWidget *MainWindow::createSettingsPanel()
     btnLayout->addWidget(saveBtn);
     btnLayout->addStretch();
 
+    // 加载已保存的设置
+    auto *cfg = ConfigManager::instance();
+    themeCombo->setCurrentIndex(cfg->uiTheme());
+    fontCombo->setCurrentIndex(cfg->uiFontSize());
+    notifyCheck->setChecked(cfg->uiNotify());
+    soundCheck->setChecked(cfg->uiSound());
+    autoLoginCheck->setChecked(cfg->uiAutoLogin());
+    privacyCheck->setChecked(cfg->uiPrivacy());
+
     // ---- 保存按钮逻辑 ----
     connect(saveBtn, &QPushButton::clicked, this, [this, themeCombo, fontCombo,
              notifyCheck, soundCheck, autoLoginCheck, privacyCheck]{
         auto *cfg = ConfigManager::instance();
-        cfg->setClaudeModel(themeCombo->currentText());   // 复用存储做主题
-        cfg->setDeepseekModel(fontCombo->currentText());  // 复用存储做字体
-        cfg->setClaudeApiKey(notifyCheck->isChecked() ? "notify_on" : "notify_off");
-        cfg->setDeepseekApiKey(soundCheck->isChecked() ? "sound_on" : "sound_off");
-        cfg->setClaudeBaseUrl(autoLoginCheck->isChecked() ? "auto_login" : "");
-        cfg->setDeepseekBaseUrl(privacyCheck->isChecked() ? "privacy_on" : "privacy_off");
+        cfg->setUiTheme(static_cast<ConfigManager::UiTheme>(themeCombo->currentIndex()));
+        cfg->setUiFontSize(static_cast<ConfigManager::UiFontSize>(fontCombo->currentIndex()));
+        cfg->setUiNotify(notifyCheck->isChecked());
+        cfg->setUiSound(soundCheck->isChecked());
+        cfg->setUiAutoLogin(autoLoginCheck->isChecked());
+        cfg->setUiPrivacy(privacyCheck->isChecked());
         cfg->save();
 
-        // 真正应用主题（简易实现：改背景色）
-        if (themeCombo->currentIndex() == 1) {
-            // 深色模式 — 这里只是模拟，实际需要整套样式替换
-            m_statusBar->setStyleSheet(
-                "font-size: 12px; color: #aaa; background: #333; border-top: 1px solid #444;");
-        } else {
-            m_statusBar->setStyleSheet(
-                "font-size: 12px; color: #888; background: #f0f1f2; border-top: 1px solid #e4e4e4;");
-        }
+        // 应用主题
+        applyAppTheme();
 
         QString summary = QString::fromUtf8(
             "\xE2\x9C\x85 设置已保存 — 主题:%1 | 字体:%2 | 通知:%3 | 提示音:%4"
@@ -1631,12 +1775,7 @@ void MainWindow::onBtnAddFriend()
         ContactStore::instance()->addContact(c);
 
         // 刷新消息列表
-        int oldIdx = m_stacked->currentIndex();
-        m_stacked->removeWidget(m_msgList);
-        m_msgList->deleteLater();
-        m_msgList = nullptr;
-        m_stacked->insertWidget(0, createMessagePanel());
-        m_stacked->setCurrentIndex(oldIdx);
+        refreshMsgList();
 
         m_statusBar->setText(QString::fromUtf8(
             "\xE2\x9C\x85 已添加联系人: %1"
@@ -1726,15 +1865,24 @@ void MainWindow::onBtnCreateGroup()
         c.type         = "group";
         c.statusText   = QString::fromUtf8("%1 人 · %2")
                         .arg(members.size() + 1).arg(memberStr);
+        c.peerAddress  = members.join(",");  // 存成员列表
         c.online       = true;
         store->addContact(c);
 
-        // 刷新消息列表
+        // 刷新消息列表和联系人列表
         int oldIdx = m_stacked->currentIndex();
         m_stacked->removeWidget(m_msgList);
         m_msgList->deleteLater();
         m_msgList = nullptr;
         m_stacked->insertWidget(0, createMessagePanel());
+        // 联系人列表也在 QStackedWidget 中，替换第3个
+        auto *oldContact = m_stacked->widget(3);
+        if (oldContact) {
+            m_stacked->removeWidget(oldContact);
+            oldContact->deleteLater();
+        }
+        m_contactList = nullptr;
+        m_stacked->insertWidget(3, createContactPanel());
         m_stacked->setCurrentIndex(oldIdx);
 
         m_statusBar->setText(QString::fromUtf8(
@@ -2222,6 +2370,17 @@ void MainWindow::refreshMessagePreview(const QString &contactId)
         }
         break;
     }
+}
+
+void MainWindow::refreshMsgList()
+{
+    if (!m_stacked) return;
+    int oldIdx = m_stacked->currentIndex();
+    m_stacked->removeWidget(m_msgList);
+    m_msgList->deleteLater();
+    m_msgList = nullptr;
+    m_stacked->insertWidget(0, createMessagePanel());
+    m_stacked->setCurrentIndex(oldIdx);
 }
 
 // ============ 事件过滤器 - 回车发送消息 ============
